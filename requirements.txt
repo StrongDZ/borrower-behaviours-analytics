@@ -1,0 +1,15 @@
+# Core dependencies
+requests>=2.31.0
+urllib3>=2.0.0
+tabulate>=0.9.0
+
+# Data processing and validation
+dataclasses-json>=0.6.0
+
+# Development and testing (optional)
+pytest>=7.4.0
+black>=23.7.0
+flake8>=6.0.0
+
+# Type checking
+mypy>=1.5.0 
