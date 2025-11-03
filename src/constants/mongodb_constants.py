@@ -1,6 +1,6 @@
 import os
 from dotenv import load_dotenv
-from src.constants.network_constants import Chains
+from constants.network_constants import Chains
 
 load_dotenv()
 

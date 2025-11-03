@@ -1,6 +1,6 @@
 import click
-from src.jobs.job_scheduler import JobScheduler
-from src.utils.logger_utils import get_logger
+from jobs.job_scheduler import JobScheduler
+from utils.logger_utils import get_logger
 
 logger = get_logger("Job Scheduler CLI")
 

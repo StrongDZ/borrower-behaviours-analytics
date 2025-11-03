@@ -1,5 +1,5 @@
 from pymongo import MongoClient
-from src.constants.mongodb_constants import MongoDBConnectionURL, BlockchainETLDatabase, DBPrefix
+from constants.mongodb_constants import MongoDBConnectionURL, BlockchainETLDatabase, DBPrefix
 
 
 class BlockchainEtlDB:
