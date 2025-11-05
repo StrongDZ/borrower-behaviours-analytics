@@ -1,6 +1,4 @@
-
-SLEEP_DURATION = 3  # seconds
-
+SLEEP_DURATION = 3
 
 class TimeConstants:
     A_MINUTE = 60
@@ -13,12 +11,10 @@ class TimeConstants:
     DAYS_31 = 31 * A_DAY
     A_YEAR = 365 * A_DAY
 
-
 class TimeInterval:
     hourly = 'hourly'
     daily = 'daily'
     monthly = 'monthly'
-
     mapping = {
         hourly: TimeConstants.A_HOUR,
         daily: TimeConstants.A_DAY,
