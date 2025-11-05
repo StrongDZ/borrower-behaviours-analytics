@@ -1,5 +1,5 @@
 import click
-from cli.job_scheduler import job_scheduler
+from src.cli.job_scheduler import job_scheduler
 
 
 @click.group()

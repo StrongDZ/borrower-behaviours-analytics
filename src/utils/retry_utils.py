@@ -1,7 +1,7 @@
 from functools import wraps
 import time
 
-from utils.logger_utils import get_logger
+from src.utils.logger_utils import get_logger
 
 logger = get_logger("RetryHandler")
 
