@@ -1,23 +1,26 @@
-# Python
-__pycache__/
-*.py[cod]
-*.pyc
-*.pyo
-*.log
-
-# Virtual Env
-.venv/
+# Virtual Environment
 venv/
 env/
+.venv/
+ENV/
 
-# IDE
+# Python Cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# IDE / Editor
 .idea/
 .vscode/
-
-# Secrets
-.env
-.env.local
+*.swp
+*.swo
 
 # OS
 .DS_Store
 Thumbs.db
+
+# Logs & Temp
+*.log
+tmp/
+temp/
