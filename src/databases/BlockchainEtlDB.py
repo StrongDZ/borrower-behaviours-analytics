@@ -29,3 +29,10 @@ class BlockchainEtlDB:
         if limit and limit > 0:
             cursor = cursor.limit(limit)
         return list(cursor)
+    
+    def get_dex_events_by_type(self, event_types: list[str], limit: int = None, projections: dict = None) -> list[dict]:
+        cursor = self.dex_events.find({"event_type": {"$in": event_types}}, projections).sort("block_number", -1)
+        if limit and limit > 0:
+            cursor = cursor.limit(limit)
+        return list(cursor)
+    

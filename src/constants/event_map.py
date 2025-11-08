@@ -9,12 +9,13 @@ EVENT_COLLECTION_MAP = {
     "LOGOPERATE": "events",
     "POSITIONOPENED": "events",
     "POSITIONINCREASED": "events",
+    "LIQUIDITYADDED": "events",
+    "MODIFYLIQUIDITY": "events",
 
     # === dex_events collection (VIẾT HOA TOÀN BỘ) ===
     "SWAP": "dex_events",
     "TRANSFER": "dex_events",
-    "MODIFYLIQUIDITY": "dex_events",
     "INCREASELIQUIDITY": "dex_events",
-    "LIQUIDITYADDED": "dex_events",
+    "ADDLIQUIDITY": "dex_events",
     "TOKENEXCHANGE": "dex_events",
 }

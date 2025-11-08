@@ -10,3 +10,4 @@ print("\ndex_events CÓ:")
 print(sorted(db.dex_events.distinct("event_type")))
 
 print("\nXONG!")
+#PYTHONPATH=. python src/test_event_list.py

@@ -1,4 +1,3 @@
-# aggregator/borrower_aggregator.py
 import time
 from collections import defaultdict
 import pymongo
@@ -11,11 +10,12 @@ from constants.event_map import EVENT_COLLECTION_MAP
 logger = get_logger("BorrowerAggregator")
 
 BATCH_SIZE = 1000
-MAX_ACTIONS = 500  # Giới hạn 500 actions mới nhất
+MAX_ACTIONS = 500
 
-# === FIELD MAP ĐÃ CẬP NHẬT ĐỦ CHO TẤT CẢ EVENT ===
+# === WHITELIST: CHỈ LẤY EVENT TRONG MAP ===
+VALID_EVENT_TYPES = set(EVENT_COLLECTION_MAP.keys())
+
 FIELD_MAP = {
-    # === events collection ===
     "BORROW": ["receiver", "onBehalf", "wallet", "assets", "project", "contract_address"],
     "REPAY": ["caller", "onBehalf", "wallet", "assets", "shares", "project", "contract_address"],
     "DEPOSIT": ["provider", "wallet", "depositType", "locktime", "value", "tokenId", "prevSupply", "supply", "project", "contract_address"],
@@ -24,14 +24,14 @@ FIELD_MAP = {
     "LOGOPERATE": ["user", "wallet", "supplyAmount", "borrowAmount", "token", "borrowTo", "withdrawTo", "totalAmounts", "exchangePricesAndConfig", "project", "contract_address", "log_index"],
     "POSITIONOPENED": ["wallet", "trader", "project", "currency", "collateralCurrency", "principal", "collateralAmount", "downPayment", "feesToBePaid", "contract_address"],
     "POSITIONINCREASED": ["wallet", "trader", "project", "principalAdded", "collateralAdded", "downPaymentAdded", "feesAdded", "contract_address"],
-
-    # === dex_events collection ===
+    "POSITIONDECREASED": ["wallet", "trader", "project", "principalRepaid", "interestPaid", "payout", "collateralReduced", "downPaymentReduced", "closeFee", "pastFees", "contract_address"],
     "SWAP": ["wallet", "sender", "amount0", "amount1", "contract_address", "project", "fee"],
     "TRANSFER": ["from", "to", "tokenId", "wallet", "contract_address"],
     "MODIFYLIQUIDITY": ["wallet", "sender", "tickLower", "tickUpper", "liquidityDelta", "project", "id", "contract_address"],
     "INCREASELIQUIDITY": ["wallet", "pool", "amount0", "amount1", "actualLiquidity", "liquidityDesired", "tokenId", "project", "contract_address"],
     "LIQUIDITYADDED": ["wallet", "liquidityProvider", "pool", "amountsAddedRaw", "totalSupply", "project", "contract_address"],
     "TOKENEXCHANGE": ["wallet", "buyer", "contract_address", "sold_id", "bought_id", "tokens_sold", "tokens_bought"],
+    "ADDLIQUIDITY": ["provider", "wallet", "pool", "amountsAddedRaw", "totalSupply", "project", "contract_address", "block_number", "block_timestamp", "transaction_hash", "log_index"],
 }
 
 def build_action(event, etype):
@@ -44,9 +44,9 @@ def build_action(event, etype):
         "event_type": etype,
         "timestamp": to_int(event.get("block_timestamp") or event.get("timestamp")),
     }
-    if not common["txHash"]: return None
+    if not common["txHash"]:
+        return None
 
-    # Thêm amountInUSD/OutUSD cho SWAP
     if etype == "SWAP":
         common["token_in"] = event.get("token0", "UNKNOWN")
         common["token_out"] = event.get("token1", "UNKNOWN")
@@ -65,92 +65,195 @@ def build_action(event, etype):
     return common
 
 def extract_user(event, etype):
-    # ƯU TIÊN: user (LOGOPERATE), wallet, sender, from, ...
-    priority = [
-        "receiver", "wallet", "sender", "from", "trader", "onBehalf", "owner", "buyer",
-        "provider", "caller", "user", "liquidityProvider", "to"
+    user_field_map = {
+        "BORROW": "receiver",
+        "SWAP": "sender",
+        "TRANSFER": "from",
+        "DEPOSIT": "provider",
+        "MODIFYLIQUIDITY": "sender",
+        "INCREASELIQUIDITY": "wallet",
+        "LIQUIDITYADDED": "liquidityProvider",
+        "TOKENEXCHANGE": "buyer",
+        "POSITIONOPENED": "trader",
+        "POSITIONINCREASED": "trader",
+        "POSITIONDECREASED": "trader",
+        "LOGOPERATE": "user",
+        "BUYCOLLATERAL": "buyer",
+        "FLASHLOAN": "wallet",
+        "REPAY": "caller",
+        "ADDLIQUIDITY": "provider",  # ← ĐÚNG NHƯ BẠN YÊU CẦU
+    }
+
+    field = user_field_map.get(etype)
+    if field and event.get(field):
+        return to_str(event[field]).lower()
+
+    fallback_priority = [
+        "receiver", "user", "wallet", "onBehalf", "trader",
+        "sender", "from", "owner", "buyer", "provider",
+        "caller", "liquidityProvider", "to"
     ]
-    for f in priority:
+    for f in fallback_priority:
         val = event.get(f)
         if val:
             return to_str(val).lower()
+
     return None
 
 def analyze_behavior(actions):
-    tags = []
-    borrow_idx = next((i for i, a in enumerate(actions) if a["event_type"] == "BORROW"), -1)
-    if borrow_idx != -1:
-        post_actions = actions[borrow_idx + 1:]
-        seq = " -> ".join(a["event_type"] for a in post_actions[:5])
-        if any(a["event_type"] in ["DEPOSIT", "INCREASELIQUIDITY"] for a in post_actions):
-            tags.append("leveraged_lending")
-        if any(a["event_type"] in ["SWAP", "TOKENEXCHANGE"] for a in post_actions):
-            tags.append("swap_invest")
-        if any(a["event_type"] in ["POSITIONOPENED", "POSITIONINCREASED"] for a in post_actions):
-            tags.append("futures_perps")
-        if seq.startswith("BORROW -> REPAY") and len(post_actions) <= 2:
-            tags.append("flash_loan")
-        if seq:
-            tags.append(f"post_flow: {seq}")
-    return tags
+    tags = set()
+    if not actions or actions[0]["event_type"] != "BORROW":
+        return list(tags)
+
+    post_actions = actions[1:]
+    post_types = [a["event_type"] for a in post_actions]
+    seq = " -> ".join(post_types[:5])
+
+    if post_actions and post_actions[0]["event_type"] == "REPAY":
+        tags.add("flash_loan")
+    elif "REPAY" in post_types[:3]:
+        tags.add("lending_repay")
+
+    if post_types.count("BORROW") >= 1:
+        tags.add("leveraged_lending")
+
+    if any(t in ["SWAP", "TOKENEXCHANGE"] for t in post_types[:5]):
+        tags.add("swap_arbitrage")
+
+    if any(t in ["MINT", "BURN", "MODIFYLIQUIDITY", "INCREASELIQUIDITY", "LIQUIDITYADDED", "ADDLIQUIDITY"] for t in post_types):
+        tags.add("lp_management")
+
+    if any(t in ["POSITIONOPENED", "POSITIONINCREASED", "POSITIONDECREASED"] for t in post_types):
+        tags.add("perp_position")
+
+    if "BUYCOLLATERAL" in post_types:
+        tags.add("liquidation_hunt")
+
+    if seq:
+        tags.add(f"flow: {seq}")
+
+    return list(tags)
 
 def aggregate_batch(db: AggregatorDB, start_block: int, end_block: int):
-    user_actions = defaultdict(list)
-    total_events = 0
-    for event_type, coll_name in EVENT_COLLECTION_MAP.items():
-        coll = db.events if coll_name == "events" else db.dex_events
-        cursor = coll.find({
-            "block_number": {"$gte": start_block, "$lt": end_block},
-            "event_type": event_type
-        }).sort("block_number", pymongo.ASCENDING)
-        count = 0
-        for event in cursor:
-            count += 1
-            user = extract_user(event, event_type)
-            if not user: continue
-            # Chỉ thêm nếu là BORROW hoặc user đã tồn tại
-            if event_type == "BORROW" or db.borrowers.count_documents({"_id": f"base_{user.lower()}"}) > 0:
-                action = build_action(event, event_type)
-                if action: user_actions[user].append(action)
-        total_events += count
-        if count > 0:
-            logger.info(f"Found {count} {event_type} events in {coll_name}")
-    logger.info(f"Total events scanned: {total_events}")
+    logger.info(f"Processing batch {start_block} → {end_block}")
 
-    if not user_actions:
-        logger.info(f"No users to aggregate in batch {start_block}-{end_block}")
+    all_events = []
+
+    cursor = db.events.find({
+        "block_number": {"$gte": start_block, "$lt": end_block}
+    }).sort("block_number", pymongo.ASCENDING)
+    batch = list(cursor)
+    all_events.extend(batch)
+    logger.info(f"Loaded {len(batch)} events from 'events'")
+
+    cursor = db.dex_events.find({
+        "block_number": {"$gte": start_block, "$lt": end_block}
+    }).sort("block_number", pymongo.ASCENDING)
+    batch = list(cursor)
+    all_events.extend(batch)
+    logger.info(f"Loaded {len(batch)} events from 'dex_events'")
+
+    if not all_events:
+        logger.info(f"No events in {start_block}-{end_block}")
         return
 
+    filtered_events = [
+        event for event in all_events
+        if event.get("event_type") in VALID_EVENT_TYPES
+    ]
+    logger.info(f"Filtered down to {len(filtered_events)} relevant events")
+
+    if not filtered_events:
+        logger.info("No valid event types in batch")
+        return
+
+    user_events = defaultdict(list)
+    for event in filtered_events:
+        etype = event["event_type"]
+        user = extract_user(event, etype)
+        if not user:
+            continue
+        block = to_int(event["block_number"])
+        user_events[user].append((block, event))
+
+    all_users_in_batch = {}
+    for user, events in user_events.items():
+        events.sort(key=lambda x: x[0])
+        all_users_in_batch[user] = events
+
+    existing_users = set()
+    if all_users_in_batch:
+        cursor = db.borrowers.find(
+            {"userAddress": {"$in": list(all_users_in_batch.keys())}},
+            {"userAddress": 1}
+        )
+        existing_users = {doc["userAddress"] for doc in cursor}
+
+    valid_users = {}
+    for user, events in all_users_in_batch.items():
+        if user in existing_users:
+            valid_users[user] = events
+        else:
+            borrow_idx = next((i for i, e in enumerate(events) if e[1].get("event_type") == "BORROW"), None)
+            if borrow_idx is not None:
+                valid_users[user] = events[borrow_idx:]
+
+    if not valid_users:
+        logger.info("No users to update in this batch")
+        return
+
+    logger.info(f"Updating {len(valid_users)} users "
+                f"(new: {sum(1 for u in valid_users if u not in existing_users)}, "
+                f"existing: {len(existing_users & valid_users.keys())}))")
+
+    for user, events in valid_users.items():
+        events.sort(key=lambda x: x[0])
+        valid_users[user] = events
+
     bulk_ops = []
-    for user, actions in user_actions.items():
-        _id = f"base_{user.lower()}"
-        # SẮP XẾP CŨ → MỚI (ASC)
-        actions.sort(key=lambda a: a["timestamp"])
+    for user, events in valid_users.items():
+        actions = []
+        for _, event in events:
+            action = build_action(event, event["event_type"])
+            if action:
+                actions.append(action)
+
+        if not actions:
+            continue
+        if user not in existing_users and actions[0]["event_type"] != "BORROW":
+            continue
+
+        _id = f"base_{user}"
         tags = analyze_behavior(actions)
-        bulk_ops.append(pymongo.UpdateOne({"_id": _id}, {
-            "$push": {
-                "actions": {
-                    "$each": actions,
-                    "$sort": {"timestamp": 1},      # CŨ Ở TRÊN, MỚI Ở DƯỚI
-                    "$slice": -MAX_ACTIONS          # LẤY 500 MỚI NHẤT
-                }
+
+        bulk_ops.append(pymongo.UpdateOne(
+            {"_id": _id},
+            {
+                "$push": {
+                    "actions": {
+                        "$each": actions,
+                        "$sort": {"block_number": 1},
+                        "$slice": -MAX_ACTIONS
+                    }
+                },
+                "$inc": {"totalActions": len(actions)},
+                "$set": {"updatedAt": int(time.time()), "userAddress": user},
+                "$addToSet": {"behaviorTags": {"$each": tags}},
+                "$setOnInsert": {"createdAt": int(time.time()), "chainId": "base"}
             },
-            "$inc": {"totalActions": len(actions)},
-            "$set": {"updatedAt": int(time.time()), "chainId": "base", "userAddress": user, "behaviorTags": tags},
-            "$setOnInsert": {"createdAt": int(time.time())}
-        }, upsert=True))
+            upsert=True
+        ))
+
     if bulk_ops:
         db.borrowers.bulk_write(bulk_ops)
-        logger.info(f"Aggregated {len(bulk_ops)} users (batch {start_block}-{end_block})")
+        logger.info(f"Aggregated {len(bulk_ops)} users")
 
 def get_tip_block(db: AggregatorDB):
     max_events = db.events.find_one(sort=[("block_number", pymongo.DESCENDING)])
     max_dex = db.dex_events.find_one(sort=[("block_number", pymongo.DESCENDING)])
-    block_events = max_events.get("block_number", 0) if max_events else 0
-    block_dex = max_dex.get("block_number", 0) if max_dex else 0
-    tip = max(block_events, block_dex)
-    logger.info(f"Tip block from cluster: {tip} (events: {block_events}, dex: {block_dex})")
-    return tip
+    block_events = to_int(max_events.get("block_number")) if max_events else 0
+    block_dex = to_int(max_dex.get("block_number")) if max_dex else 0
+    return max(block_events, block_dex)
 
 class BorrowerAggregatorJob(CLIJob):
     def __init__(self):
@@ -166,7 +269,7 @@ class BorrowerAggregatorJob(CLIJob):
         for start in range(last_block, tip_block, BATCH_SIZE):
             end = min(start + BATCH_SIZE, tip_block + 1)
             aggregate_batch(self.db, start, end)
-        self.db.save_last_block(tip_block)
+            self.db.save_last_block(end)
 
     def _follow_end(self):
         self.db.close()
